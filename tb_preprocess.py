@@ -7,6 +7,20 @@ from researches.ocr.textbox.tb_augment import *
 from researches.ocr.textbox.tb_vis import *
 
 
+def rotate_image(img, angle):
+    width = img.shape[1]
+    height = img.shape[0]
+    center = (width // 2, height // 2)
+    matrix = cv2.getRotationMatrix2D(center, -angle / math.pi * 180, 1.0)
+    new_width = int(abs(width * matrix[0, 0]) + abs(height * matrix[0, 1]))
+    new_height = int(abs(height * matrix[0, 0]) + abs(width * matrix[0, 1]))
+    matrix[0, 2] += (new_width / 2) - center[0]
+    matrix[1, 2] += (new_height / 2) - center[1]
+    return cv2.warpAffine(img, matrix, (new_width, new_height),
+                          borderMode=cv2.BORDER_CONSTANT,
+                          borderValue=np.median(img.reshape(-1, 3), axis=0))
+
+
 def detect_angle(img):
     def weighted_median(data, weights):
         """
@@ -86,20 +100,6 @@ def estimate_angle(signal, args, path, seed, size, device=None):
         print("angle: %s"%angle)
         transform_det["rotation"] = angle * 90
     return signal, transform_det
-
-
-def rotate_image(img, angle):
-    width = img.shape[1]
-    height = img.shape[0]
-    center = (width // 2, height // 2)
-    matrix = cv2.getRotationMatrix2D(center, -angle / math.pi * 180, 1.0)
-    new_width = int(abs(width * matrix[0, 0]) + abs(height * matrix[0, 1]))
-    new_height = int(abs(height * matrix[0, 0]) + abs(width * matrix[0, 1]))
-    matrix[0, 2] += (new_width / 2) - center[0]
-    matrix[1, 2] += (new_height / 2) - center[1]
-    return cv2.warpAffine(img, matrix, (new_width, new_height),
-                          borderMode=cv2.BORDER_CONSTANT,
-                          borderValue=np.median(img.reshape(-1, 3), axis=0))
 
 
 def estimate_angle_and_crop_area(signal, args, path, seed, size, device=None):

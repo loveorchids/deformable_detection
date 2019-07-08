@@ -6,6 +6,16 @@ def parse_arguments():
     #        TRAINING        #
     ##############
     parser.add_argument(
+        "--train",
+        action="store_true",
+        help="enable train",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="enable test",
+    )
+    parser.add_argument(
         "-dt",
         "--deterministic_train",
         action="store_true",
@@ -19,33 +29,38 @@ def parse_arguments():
         help="Turn on CuDNN benchmark",
     )
     parser.add_argument(
+        "-ft",
+        "--finetune",
+        action="store_true",
+        help="do finetune",
+    )
+    parser.add_argument(
         "-en",
         "--epoch_num",
         type=int,
         help="Epoch number of the training",
         default=200
     )
+
     
     parser.add_argument(
         "-mp",
         "--model_prefix",
         type=str,
         help="prefix of model",
-        required=True
     )
     parser.add_argument(
         "-mpf",
         "--model_prefix_finetune",
         type=str,
         help="prefix of existing model need to be finetuned",
-        required=True
     )
     parser.add_argument(
         "-bpg",
         "--batch_size_per_gpu",
         type=int,
         help="batch size inside each GPU during training",
-        default=1
+        default=6
     )
     parser.add_argument(
         "-lt",
@@ -60,7 +75,7 @@ def parse_arguments():
         "--datasets",
         nargs='+',
         help="a list folder/folders to use as training set",
-        default=["tempholding"]
+        default=["tempholding_auto"]
     )
 
     ##############
@@ -92,6 +107,12 @@ def parse_arguments():
     #          MODEL         #
     ##############
     parser.add_argument(
+        "--with_extra4",
+        type=bool,
+        default=True,
+        help="with extra 4 layer in model defination",
+    )
+    parser.add_argument(
         "-csw",
         "--cfg_super_wide",
         type=float,
@@ -114,8 +135,106 @@ def parse_arguments():
              "be treated as negative value.",
         default=0.45
     )
-    
-    
-
+    parser.add_argument(
+        "-if",
+        "--inner_filters",
+        type=int,
+        help="filter numbers in loc and conf block",
+        default=64
+    )
+    parser.add_argument(
+        "-imf",
+        "--inner_m_factor",
+        type=float,
+        help="multiplication factor for numbers in loc and conf block",
+        default=1.0
+    )
+    parser.add_argument(
+        "-fpn",
+        "--feature_pyramid_net",
+        action="store_true",
+        help="use feature pyramid network",
+    )
+    parser.add_argument(
+        "-sa",
+        "--self_attention",
+        action="store_true",
+        help="use self attention",
+    )
+    parser.add_argument(
+        "-fl",
+        "--focal_loss",
+        action="store_true",
+        help="use focal_loss",
+    )
+    parser.add_argument(
+        "-fp",
+        "--focal_power",
+        type=float,
+        default=2.0,
+        help="power of focal loss",
+    )
+    parser.add_argument(
+        "-l2c",
+        "--loc_to_conf",
+        type=bool,
+        default=True,
+    )
+    parser.add_argument(
+        "--conf_incep",
+        type=bool,
+        default=True,
+    )
+    parser.add_argument(
+        "--loc_incep",
+        type=bool,
+        default=True,
+    )
+    parser.add_argument(
+        "--conf_preconv",
+        type=bool,
+        default=True,
+    )
+    parser.add_argument(
+        "--loc_preconv",
+        type=bool,
+        default=True,
+    )
+    ##############
+    #          TEST         #
+    ##############
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="output test score for each sample",
+    )
+    parser.add_argument(
+        "-nth",
+        "--nth_best_model",
+        type=int,
+        help="1 represent the latest model",
+        default=1
+    )
+    parser.add_argument(
+        "-dtk",
+        "--detector_top_k",
+        type=int,
+        help="get top_k boxes from prediction",
+        default=2500
+    )
+    parser.add_argument(
+        "-dct",
+        "--detector_conf_threshold",
+        type=float,
+        help="detector_conf_threshold",
+        default=0.05
+    )
+    parser.add_argument(
+        "-dnt",
+        "--detector_nms_threshold",
+        type=float,
+        help="detector_nms_threshold",
+        default=0.3
+    )
     args = parser.parse_args()
     return args

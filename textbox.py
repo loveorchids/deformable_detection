@@ -1,5 +1,6 @@
 import os, time, sys, math, random, glob, datetime
-sys.path.append(os.path.expanduser("~/Documents/sroie2019"))
+sys.path.append(os.path.expanduser("~/Documents"))
+sys.path.append(os.path.expanduser("~/Documents/InvoiceDetector"))
 import cv2, torch
 import numpy as np
 import omni_torch.utils as util
@@ -20,15 +21,11 @@ import omni_torch.visualize.basic as vb
 PIC = os.path.expanduser("~/Pictures/")
 TMPJPG = os.path.expanduser("~/Pictures/tmp.jpg")
 opt = parse_arguments()
-edict = util.get_args(preset.PRESET)
-args = util.cover_edict_with_argparse(opt, edict)
+args = util.get_args(preset.PRESET, opt=opt)
 cfg = model.cfg
 cfg['super_wide'] = args.cfg_super_wide
 cfg['super_wide_coeff'] = args.cfg_super_wide_coeff
 cfg['overlap_thresh'] = args.jaccard_distance_threshold
-if not torch.cuda.is_available():
-    raise RuntimeError("Need cuda devices")
-dt = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M")
 
 
 def fit(args, cfg, net, detector, dataset, optimizer, is_train):
@@ -46,7 +43,7 @@ def fit(args, cfg, net, detector, dataset, optimizer, is_train):
             print("Visualizing prediction result at %d th epoch %d th iteration"%(args.curr_epoch, epoch))
             visualize = True
         start_time = time.time()
-        criterion = MultiBoxLoss(cfg, neg_pos=3)
+        criterion = MultiBoxLoss(cfg, neg_pos=3, use_focal=args.focal_loss, focal_power=args.focal_power)
         # Update variance and balance of loc_loss and conf_loss
         cfg['variance'] = [var * cfg['var_updater'] if var <= 0.95 else 1 for var in cfg['variance']]
         cfg['alpha'] *= cfg['alpha_updater']
@@ -65,7 +62,11 @@ def fit(args, cfg, net, detector, dataset, optimizer, is_train):
                 #visualize_bbox(args, cfg, images, targets, net.module.prior, batch_idx)
                 pass
             if is_train:
-                loss_l, loss_c = criterion(out, targets, ratios)
+                try:
+                    loss_l, loss_c = criterion(out, targets, ratios)
+                except RuntimeError:
+                    print("error in calculate loss_c")
+                    continue
                 loss = loss_l + loss_c
                 Loss_L.append(float(loss_l.data))
                 Loss_C.append(float(loss_c.data))
@@ -75,7 +76,8 @@ def fit(args, cfg, net, detector, dataset, optimizer, is_train):
             else:
                 # Turn the input param detector into None so as to
                 # Experiment with Detector's Hyper-parameters
-                for _i, top_k in enumerate([1500]):
+                create_detector = True if detector is None else False
+                for _i, top_k in enumerate([500]):
                     for _j, conf_thres in enumerate([0.05]):
                         for _k, nms_thres in enumerate([0.3]):
                             eval_thres = [0.1]
@@ -84,7 +86,7 @@ def fit(args, cfg, net, detector, dataset, optimizer, is_train):
                                 batch_result = epoch_eval_results[key]
                             else:
                                 batch_result = {}
-                            if detector is None:
+                            if create_detector:
                                 detector = model.Detect(num_classes=2, bkg_label=0, top_k=top_k,
                                                         conf_thresh=conf_thres, nms_thresh=nms_thres)
                             loc_data, conf_data, prior_data = out
@@ -161,31 +163,62 @@ def evaluate(img, detections, targets, batch_idx, eval_thres, visualize=False, p
     return eval_result
 
 
+def test():
+    aug = aug_test(args)
+    dataset = data.fetch_detection_data(args, sources=args.test_sources,
+                                        k_fold=1, auxiliary_info=args.test_aux, aug=aug,
+                                        batch_size=1 / torch.cuda.device_count(), shuffle=False)[0][0]
+    net = model.SSD(cfg, connect_loc_to_conf=args.loc_to_conf, fix_size=args.fix_size,
+                    conf_incep=args.conf_incep, loc_incep=args.loc_incep, nms_thres=args.nms_threshold,
+                    loc_preconv=args.loc_preconv, conf_preconv=args.conf_preconv,
+                    FPN=args.feature_pyramid_net, SA=args.self_attention,
+                    in_wid=args.inner_filters, m_factor=args.inner_m_factor)
+    net = torch.nn.DataParallel(net, device_ids=[0], output_device=0).cuda()
+    net = util.load_latest_model(args, net, prefix=args.model_prefix_finetune, strict=True)
+    detector = model.Detect(num_classes=2, bkg_label=0, top_k=args.detector_top_k,
+                            conf_thresh=args.detector_conf_threshold, nms_thresh=args.detector_nms_threshold)
+    with torch.no_grad():
+        for batch_idx, (images, targets) in enumerate(dataset):
+            images = images.cuda()
+            print(images.shape)
+            targets = [ann.cuda() for ann in targets]
+            ratios = images.size(3) / images.size(2)
+            if ratios != 1.0:
+                print(ratios)
+            out = net(images,  is_train=False)
+            loc_data, conf_data, prior_data = out
+            #prior_data = prior_data.to("cuda:%d" % (device_id))
+            det_result = detector(loc_data, conf_data, prior_data)
+            eval_result = evaluate(images, det_result.data, targets, batch_idx, args.threshold,
+                                   visualize=True, post_combine=True)
+            print(eval_result)
+
+
 def main():
-    if args.fix_size:
-        aug = aug_sroie(args)
-    else:
-        aug = aug_sroie_dynamic_2()
-        args.batch_size_per_gpu = 1
+    aug = aug_temp(args)
+    dt = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M")
     datasets = data.fetch_detection_data(args, sources=args.train_sources, k_fold=1,
                                          batch_size=args.batch_size_per_gpu, batch_size_val=1,
                                          auxiliary_info=args.train_aux, split_val=0.1, aug=aug)
-    model_prefix = "768"
     for idx, (train_set, val_set) in enumerate(datasets):
         loc_loss, conf_loss = [], []
         accuracy, precision, recall, f1_score = [], [], [], []
         print("\n =============== Cross Validation: %s/%s ================ " %
               (idx + 1, len(datasets)))
-        net = model.SSD(cfg, connect_loc_to_conf=True, fix_size=args.fix_size,
-                        incep_conf=True, incep_loc=True, nms_thres=args.nms_threshold)
-        net = torch.nn.DataParallel(net).cuda()
-        detector = model.Detect(num_classes=2, bkg_label=0, top_k=1500, conf_thresh=0.05, nms_thresh=0.3)
+        net = model.SSD(cfg, connect_loc_to_conf=args.loc_to_conf, fix_size=args.fix_size,
+                        conf_incep=args.conf_incep, loc_incep=args.loc_incep, nms_thres=args.nms_threshold,
+                        loc_preconv=args.loc_preconv, conf_preconv=args.conf_preconv,
+                        FPN=args.feature_pyramid_net, SA=args.self_attention,
+                        in_wid = args.inner_filters, m_factor = args.inner_m_factor)
+        net = torch.nn.DataParallel(net, device_ids=args.gpu_id, output_device=args.output_gpu_id).cuda()
+        detector = model.Detect(num_classes=2, bkg_label=0, top_k=800, conf_thresh=0.05, nms_thresh=0.3)
+       #detector = None
         # Input dimension of bbox is different in each step
         torch.backends.cudnn.benchmark = True
         if args.fix_size:
             net.module.prior = net.module.prior.cuda()
         if args.finetune:
-            net = util.load_latest_model(args, net, prefix=args.model_prefix_finetune)
+            net = util.load_latest_model(args, net, prefix=args.model_prefix_finetune, strict=True)
         # Using the latest optimizer, better than Adam and SGD
         optimizer = AdaBound(net.parameters(), lr=args.learning_rate, final_lr=20*args.learning_rate,
                              weight_decay=args.weight_decay,)
@@ -205,19 +238,24 @@ def main():
                               np.asarray(recall), np.asarray(f1_score)]
             if epoch != 0 and epoch % 10 == 0:
                 util.save_model(args, args.curr_epoch, net.state_dict(), prefix=args.model_prefix,
-                                keep_latest=20)
+                                keep_latest=3)
             if epoch > 5:
-                # Train losses
-                vb.plot_curves(train_losses, ["location", "confidence"], args.loss_log, dt + "_loss", window=5)
-                # Val metrics
-                vb.plot_curves(val_losses, ["Accuracy", "Precision", "Recall", "F1-Score"], args.loss_log,
-                                          dt + "_val", window=5, bound={"low": 0.0, "high": 1.0})
+                vb.plot_multi_loss_distribution(
+                    multi_line_data=[train_losses, val_losses],
+                    multi_line_labels=[["location", "confidence"], ["Accuracy", "Precision", "Recall", "F1-Score"]],
+                    save_path=args.loss_log, window=5, name=dt,
+                    bound=[ {"low": 0.0, "high": 3.0}, {"low": 0.0, "high": 1.0}],
+                    titles=["Train Loss", "Validation Score"]
+                )
         # Clean the data for next cross validation
         del net, optimizer
         args.curr_epoch = 0
 
 
 if __name__ == "__main__":
-    main()
+    if args.train:
+        main()
+    if args.test:
+        test()
 
 

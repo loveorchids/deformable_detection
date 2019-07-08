@@ -45,7 +45,10 @@ def combine_boxes(prediction, img, h_thres_pct = 1.5, y_thres_pct=1, combine_thr
         else:
             #pass
             qualified_boxes.append(pred)
-    prediction = torch.stack(qualified_boxes, dim=0)
+    try:
+        prediction = torch.stack(qualified_boxes, dim=0)
+    except RuntimeError:
+        print(qualified_boxes)
     
     # Method 2: eliminate by histogram
     # Eliminate by variance

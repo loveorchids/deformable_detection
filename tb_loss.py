@@ -10,6 +10,19 @@ from researches.ocr.textbox.tb_utils import match, log_sum_exp
 # https://github.com/amdegroot/ssd.pytorch
 #
 
+class FocalLoss(nn.Module):
+    def __init__(self, power):
+        super().__init__()
+        self.focal_power = power
+
+    def forward(self, pred, target):
+        _target = target.unsqueeze(-1)
+        _target = torch.cat((1 - _target, _target), dim=-1).byte()
+        px = F.softmax(pred, dim=-1)
+        px = px[_target]
+        loss_c = - ((1 - px) ** self.focal_power * px.log()).mean() * 100
+        return loss_c
+
 class MultiBoxLoss(nn.Module):
     """SSD Weighted Loss Function
     Compute Targets:
@@ -33,7 +46,7 @@ class MultiBoxLoss(nn.Module):
         See: https://arxiv.org/pdf/1512.02325.pdf for more details.
     """
 
-    def __init__(self, cfg, neg_pos, use_gpu=True):
+    def __init__(self, cfg, neg_pos, use_gpu=True, use_focal=False, focal_power=2.0):
         super(MultiBoxLoss, self).__init__()
         self.cfg = cfg
         self.num_classes = cfg['num_classes']
@@ -42,6 +55,9 @@ class MultiBoxLoss(nn.Module):
         self.threshold = cfg['overlap_thresh']
         self.negpos_ratio = neg_pos
         self.balancer = cfg['alpha']
+        self.use_focal = use_focal
+        if use_focal:
+            self.focal_loss = FocalLoss(power=focal_power)
 
     def forward(self, predictions, targets, ratios):
         """Multibox Loss
@@ -77,6 +93,7 @@ class MultiBoxLoss(nn.Module):
         loc_t = Variable(loc_t, requires_grad=False)
         conf_t = Variable(conf_t, requires_grad=False)
 
+        # pos代表所有与ground truth匹配成功的prior box index
         pos = conf_t > 0
         num_pos = pos.sum(dim=1, keepdim=True)
 
@@ -85,32 +102,43 @@ class MultiBoxLoss(nn.Module):
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
-        loss_l = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
+        loss_l = F.smooth_l1_loss(loc_p, loc_t, reduction="sum")
 
-        # Compute max conf across batch for hard negative mining
-        batch_conf = conf_data.view(-1, self.num_classes)
-        loss_c = log_sum_exp(batch_conf) - batch_conf.gather(1, conf_t.view(-1, 1))
-        loss_c = loss_c.view(num, -1)
-        # Hard Negative Mining
-        loss_c[pos] = 0  # filter out pos boxes for now
-        loss_c = loss_c.view(num, -1)
-        _, loss_idx = loss_c.sort(1, descending=True)
-        _, idx_rank = loss_idx.sort(1)
-        num_pos = pos.long().sum(1, keepdim=True)
-        num_neg = torch.clamp(self.negpos_ratio*num_pos, max=pos.size(1)-1)
-        neg = idx_rank < num_neg.expand_as(idx_rank)
+        if self.use_focal:
+            loss_c = self.focal_loss(conf_data, conf_t)
+            """
+            _target = conf_t.unsqueeze(-1)
+            _target = torch.cat((1 - _target, _target), dim=-1).byte()
+            pred = F.softmax(conf_data, dim=-1)
+            px = pred[_target]
+            loss_c = - ((1 - px) ** self.focal_power * px.log()).mean()
+            """
+        else:
+            # Compute max conf across batch for hard negative mining
+            batch_conf = conf_data.view(-1, self.num_classes)
+            loss_c = log_sum_exp(batch_conf) - batch_conf.gather(1, conf_t.view(-1, 1))
+            loss_c = loss_c.view(num, -1)
+            # Hard Negative Mining
+            loss_c[pos] = 0  # filter out pos boxes for now
+            loss_c = loss_c.view(num, -1)
+            _, loss_idx = loss_c.sort(1, descending=True)
+            _, idx_rank = loss_idx.sort(1)
+            num_pos = pos.long().sum(1, keepdim=True)
+            num_neg = torch.clamp(self.negpos_ratio * num_pos, max=pos.size(1) - 1)
+            neg = idx_rank < num_neg.expand_as(idx_rank)
 
-        # Confidence Loss Including Positive and Negative Examples
-        pos_idx = pos.unsqueeze(2).expand_as(conf_data)
-        neg_idx = neg.unsqueeze(2).expand_as(conf_data)
-        conf_p = conf_data[(pos_idx+neg_idx).gt(0)].view(-1, self.num_classes)
-        targets_weighted = conf_t[(pos+neg).gt(0)]
-        loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
-
-        # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
-
+            # Confidence Loss Including Positive and Negative Examples
+            pos_idx = pos.unsqueeze(2).expand_as(conf_data)
+            neg_idx = neg.unsqueeze(2).expand_as(conf_data)
+            # conf_p中那些将既没有与ground truth匹配成功，又未被HNM选中的negative sample强制变为0
+            conf_pred = conf_data[(pos_idx + neg_idx).gt(0)].view(-1, self.num_classes)
+            conf_label = conf_t[(pos + neg).gt(0)]
+            loss_c = F.cross_entropy(conf_pred, conf_label, reduction="sum")
+            # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
         N = num_pos.data.sum()
         loss_l /= N
         loss_l *= self.balancer
-        loss_c /= N
+        if not self.use_focal:
+            loss_c /= N
+        #print(loss_l, loss_c)
         return loss_l, loss_c

@@ -37,8 +37,8 @@ def extract_bbox(args, path, seed, size):
         if abs(x2 - x1) * abs(y2 - y1) <= args.min_bbox_threshold * h * w / 100:
             # Skip a bbox which is smaller than a certain percentage of the total size
             continue
-        BBox.append(imgaug.imgaug.BoundingBox(x1, y1, x2, y2))
-    BBox = imgaug.imgaug.BoundingBoxesOnImage(BBox, shape=image.shape)
+        BBox.append(imgaug.augmentables.bbs.BoundingBox(x1, y1, x2, y2))
+    BBox = imgaug.augmentables.bbs.BoundingBoxesOnImage(BBox, shape=image.shape)
     # The one with text is labeled as 0 not 1, or that would cause trouble in loss calculations
     return image, BBox, [0 for i in coords]
 
@@ -87,7 +87,7 @@ def detection_collector(batch):
 def fetch_detection_data(args, sources, auxiliary_info, batch_size, batch_size_val=None,
                          shuffle=True, split_val=0.0, k_fold=1, pre_process=None, aug=None):
     args.loading_threads = round(args.loading_threads * torch.cuda.device_count())
-    batch_size = batch_size * torch.cuda.device_count()
+    batch_size = round(batch_size * torch.cuda.device_count())
     if batch_size_val is None:
         batch_size_val = batch_size
     else:
@@ -95,7 +95,7 @@ def fetch_detection_data(args, sources, auxiliary_info, batch_size, batch_size_v
     dataset = []
     for i, source in enumerate(sources):
         subset = Arbitrary_Dataset(args, sources=[source], step_1=[get_path_and_label],
-                                   step_2=[omth_loader.read_image], bbox_loader=[extract_bbox],
+                                   step_2=[omth_loader.read_image_with_bbox], bbox_loader=[extract_bbox],
                                    auxiliary_info=[auxiliary_info[i]], pre_process=[pre_process],
                                    augmentation=[aug])
         subset.prepare()
@@ -117,4 +117,3 @@ def fetch_detection_data(args, sources, auxiliary_info, batch_size, batch_size_v
 
 if __name__ == "__main__":
     pass
-    

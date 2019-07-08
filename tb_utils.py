@@ -18,6 +18,20 @@ def calculate_anchor_number(cfg, i):
     return len(cfg['box_ratios'][i]) + (0, len(cfg['box_ratios_large'][i]))[cfg['big_box']]
 
 
+def eight_point_form(boxes, side_length):
+    # 0,   1,   2,  3,  => 0,   1,   2,   1,   2,   3,   0,   3
+    # x1, y1, x2, y2 => x1, y1, x2, y1, x2, y2, x1, y2
+    result = torch.stack((boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 1],
+                          boxes[:, 2], boxes[:, 3], boxes[:, 0], boxes[:, 3]), 1)
+    result = result.view(boxes.size(0), -1, 2)
+    return result * side_length
+
+
+def four_point_form(boxes, side_length):
+    boxes = boxes.view(-1, 8)
+    return torch.stack((boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 5]), 1) / side_length
+
+
 def point_form(boxes, img_ratio):
     """ Convert prior_boxes to (xmin, ymin, xmax, ymax)
     """
@@ -98,6 +112,20 @@ def jaccard(box_a, box_b):
     return jac
 
 
+def boost_inner_jaccard(targets, priors, img_ratio):
+    targets = center_size(targets, img_ratio)
+    inter = intersect(targets, priors)
+    prior_size = get_box_size(priors).unsqueeze(0).expand_as(inter)
+    prior_ratio = (targets[:, 2] / targets[:, 3] / priors[:, 2] * priors[:, 3]).unsqueeze(0).expand_as(inter)
+    indicator = (inter / prior_size) > 0.8
+
+
+def wide_box_breaker(targets, img_ratio):
+    targets = center_size(targets, img_ratio)
+    for target in targets:
+        pass
+
+
 def super_wide_jaccard(targets, priors, img_ratio):
     """
     match a wide textbox with those small boxes inside the large boxes
@@ -131,6 +159,23 @@ def super_wide_jaccard(targets, priors, img_ratio):
     return super_wide_overlaps
     
 
+def jaccard_l2_norm(cfg, truths, priors, single_threshold, overall_threshold):
+    ratios = (truths[:, 2] - truths[:, 0]) / (truths[:, 3] - truths[:, 1])
+    truths = eight_point_form(truths, cfg["input_img_size"][0]) # (?, 4, 2)
+    priors = eight_point_form(priors, cfg["input_img_size"][0]) # (?, 4, 2)
+    
+    truths = truths.unsqueeze(1).repeat(1, priors.size(0), 1, 1)
+    priors = priors.unsqueeze(0).repeat(truths.size(0), 1, 1, 1)
+    l2_norm = torch.sum((truths - priors) ** 2, -1)
+    ratios = ratios.unsqueeze(-1).unsqueeze(-1).expand_as(l2_norm)
+    idx = l2_norm < ratios * (single_threshold ** 2)
+    idx = torch.sum(idx, -1) == 4 # the last 4 dimension should all be 1
+    # overall_threshold < 4 * single_threshold
+    idx_2 = torch.sum(l2_norm, -1) < ratios[:, :, 0] * (overall_threshold ** 2)
+    idx = idx * idx_2
+    return idx
+
+
 def match(cfg, threshold, truths, priors, variances, labels, loc_t, conf_t, idx, img_ratio,
           visualize=False, jaccard=jaccard):
     """Match each prior box with the ground truth box of the highest jaccard
@@ -149,10 +194,12 @@ def match(cfg, threshold, truths, priors, variances, labels, loc_t, conf_t, idx,
     Return:
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
+
     if cfg['clip']:
         overlaps = jaccard(truths, point_form(priors, img_ratio).clamp_(max=1, min=0))
     else:
         overlaps = jaccard(truths, point_form(priors, img_ratio))
+    #overlaps = jaccard_l2_norm(cfg, truths, priors, 30, 80).float()
     #overlaps = box_jaccard(center_size(truths, 1), priors)
     prior_ratios = calibrate_prior(priors[:, 2] / priors[:, 3]).unsqueeze(0).repeat(truths.size(0), 1)
     overlaps = overlaps * prior_ratios
@@ -342,7 +389,7 @@ def measure(pred_boxes, gt_boxes, width, height):
         """
         inter = intersect(pred_boxes, gt_boxes)
         text_area = get_box_size(pred_boxes)
-        gt_area = get_box_size(gt_boxes)
+        gt_area = get_box_size(gt_boxes).clamp_(min=1e-6)
         num_sample = max(text_area.size(0),  gt_area.size(0))
         accuracy = torch.sum(jaccard(pred_boxes, gt_boxes).max(0)[0]) / num_sample
         precision = torch.sum(inter.max(1)[0] / text_area) / num_sample
