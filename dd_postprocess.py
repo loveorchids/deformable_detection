@@ -1,19 +1,11 @@
-import os, time, sys, math, random, glob, datetime
-sys.path.append(os.path.expanduser("~/Documents/sroie2019"))
-import cv2, torch
+import os, datetime
+import torch
 import numpy as np
-import omni_torch.utils as util
-import researches.ocr.textbox as init
-import researches.ocr.textbox.tb_data as data
-import researches.ocr.textbox.tb_preset as preset
-import researches.ocr.textbox.tb_model as model
-from researches.ocr.textbox.tb_loss import MultiBoxLoss
-from researches.ocr.textbox.tb_utils import *
-from researches.ocr.textbox.tb_preprocess import *
-from researches.ocr.textbox.tb_augment import *
-from researches.ocr.textbox.tb_vis import visualize_bbox, print_box
-from omni_torch.networks.optimizer.adabound import AdaBound
+from dd_utils import *
+from dd_preprocess import *
+from dd_vis import visualize_bbox, print_box
 import omni_torch.visualize.basic as vb
+import omni_torch.utils as util
 
 
 def combine_boxes(prediction, img, h_thres_pct = 1.5, y_thres_pct=1, combine_thres=0.7,

@@ -3,8 +3,8 @@ import torch, cv2
 import torch.nn.functional as F
 import numpy as np
 import omni_torch.utils as util
-from researches.ocr.textbox.tb_augment import *
-from researches.ocr.textbox.tb_vis import *
+from dd_augment import *
+from dd_vis import *
 
 
 def rotate_image(img, angle):
@@ -208,7 +208,7 @@ def clahe_inv(img, args, path, seed, size):
 
 def refine_dataset(args, path):
     import omni_torch.visualize.basic as vb
-    import researches.ocr.textbox.tb_data as data
+    import dd_data as data
     dataset = data.fetch_detection_data(args, sources=args.train_sources, k_fold=1,
                                          batch_size=1, batch_size_val=1, auxiliary_info=args.train_aux, split_val=0,
                                          pre_process=None, aug=None, shuffle=False)
@@ -257,7 +257,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import time
     from imgaug import augmenters
-    import researches.ocr.textbox.tb_preset as preset
+    import dd_preset as preset
     from random import shuffle
     #sroie_data_summary()
     args = util.get_args(preset.PRESET)

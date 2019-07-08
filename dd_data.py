@@ -5,8 +5,8 @@ from torch.utils.data import *
 from omni_torch.data.arbitrary_dataset import Arbitrary_Dataset
 import omni_torch.data.data_loader as omth_loader
 import omni_torch.utils as util
-from researches.ocr.textbox.tb_preprocess import *
-from researches.ocr.textbox.tb_augment import *
+from dd_preprocess import *
+from dd_augment import *
 
 
 def get_path_and_label(args, length, paths, auxiliary_info):

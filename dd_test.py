@@ -1,20 +1,19 @@
 import os, time, sys, math, random, glob, datetime, argparse
 
 sys.path.append(os.path.expanduser("~/Documents"))
-sys.path.append(os.path.expanduser("~/Documents/InvoiceDetector"))
 import cv2, torch
 import numpy as np
 import imgaug
 from imgaug import augmenters
 import omni_torch.utils as util
-import researches.ocr.textbox.tb_preset as preset
-import researches.ocr.textbox.tb_model as model
-import researches.ocr.textbox.tb_data as tb_data
-from researches.ocr.textbox.tb_utils import *
-from researches.ocr.textbox.tb_preprocess import *
-from researches.ocr.textbox.tb_augment import *
-from researches.ocr.textbox.tb_postprocess import combine_boxes
-from researches.ocr.textbox.tb_vis import visualize_bbox, print_box
+import dd_preset as preset
+import dd_model as model
+import dd_data as tb_data
+from dd_utils import *
+from dd_preprocess import *
+from dd_augment import *
+from dd_postprocess import combine_boxes
+from dd_vis import visualize_bbox, print_box
 import omni_torch.visualize.basic as vb
 
 TMPJPG = os.path.expanduser("~/Pictures/tmp.jpg")

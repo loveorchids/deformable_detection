@@ -5,8 +5,8 @@ from torch.autograd import Function
 import numpy as np
 from torchvision.models import vgg16_bn
 import omni_torch.networks.blocks as omth_blocks
-import researches.ocr.textbox as init
-from researches.ocr.textbox.tb_utils import *
+import init
+from dd_utils import *
 
 
 cfg = {

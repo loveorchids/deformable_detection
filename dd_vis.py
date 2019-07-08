@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import omni_torch.visualize.basic as vb
 from matplotlib import gridspec
-from researches.ocr.textbox.tb_utils import *
+from dd_utils import *
 
 def print_box(red_boxes=(), shape=0, green_boxes=(), blue_boxes=(), img=None,
               idx=None, title=None, step_by_step_r=False, step_by_step_g=False,

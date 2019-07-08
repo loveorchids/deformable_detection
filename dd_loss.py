@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 #from layers.box_utils import match, log_sum_exp
-from researches.ocr.textbox.tb_utils import match, log_sum_exp
+from dd_utils import match, log_sum_exp
 
 #
 # This a slight modified version from originally implementation
