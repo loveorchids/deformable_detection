@@ -165,7 +165,6 @@ class SSD(nn.Module):
         self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[5], kernel_sizes=[3, 1],
                                                        filters=[self.extra_layer_filters[6], self.extra_layer_filters[7]],
                                                        stride=[1, 2], padding=[1, 0], batch_norm=self.batch_norm))
-
         if self.SA:
             # self attention module
             if self.with_extra4:
