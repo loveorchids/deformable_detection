@@ -7,58 +7,9 @@ from torchvision.models import vgg16_bn
 import omni_torch.networks.blocks as omth_blocks
 import init
 from dd_utils import *
+from dd_model_cfg import *
 
-
-cfg = {
-    # Configuration for 512x512 input image
-    'num_classes': 2,
-    # Which conv layer output to use
-    # The program create the prior box according to the length of conv_output
-    # As long as its length does not exceed the length of other value
-    # e.g. feature_map_sizes, box_height, box_height_large
-    # Then it will be OK
-    'conv_output': ["conv_4", "conv_5", "extra_2", "extra_3"],
-    #'feature_map_sizes': [96, 48, 24, 24, 24],
-    'feature_map_sizes': [64, 32, 16, 16, 16],
-    # For static input size only, when Dynamic mode is turned out, it will not be used
-    # Must be 2d list or tuple
-    'input_img_size': [512, 512],
-    #'input_img_size': [768, 768],
-    # See the visualization result by enabling visualize_bbox in function fit of textbox.py
-    # And change the settings according to the result
-    # Some possible settings of box_height and box_height_large
-    # 'box_height': [[16], [26], [36]],
-    # 'box_height': [[10, 16], [26], [36]],
-    # 'box_height': [[16], [26], []],
-    'box_height': [[18], [30], [46], [68]],
-    #'box_ratios': [[1, 2, 4, 7, 11, 15, 20, 26], [0.5, 1, 2, 5, 9, 13, 16, 18],
-                   #[0.25, 0.5, 1, 2, 5, 8, 10], [0.5, 1, 2, 3, 5, 8]],
-    'box_ratios': [[1, 4, 8, 13, 29, 26], [0.5, 1, 2, 5, 9, 15],
-                   [1, 2, 5, 10, 15], [1, 2, 5, 8], [1, 2, 3, 4]],
-    # If big_box is True, then box_height_large and box_ratios_large will be used
-    'big_box': True,
-    'box_height_large': [[24], [38], [56], [98]],
-    #'box_ratios_large': [[0.5, 1, 2, 4, 7, 11, 15, 20], [0.3, 0.5, 1, 3, 6, 9, 11, 13],
-                         #[0.25, 0.5, 1, 2, 4, 7, 9], [0.5, 1, 2, 3, 5]],
-    'box_ratios_large': [[1, 2, 4, 7, 11, 15, 20], [0.5, 1, 3, 6, 9, 13],
-                         [1, 2, 4, 7, 9], [1, 2, 3, 5], [1, 2, 3, 4]],
-    # You can increase the stride when feature_map_size is large
-    # especially at swallow conv layers, so as not to create lots of prior boxes
-    'stride': [1, 1, 1, 1, 1],
-    # Input depth for location and confidence layers
-    'loc_and_conf': [512, 512, 256, 256, 384],
-    # The hyperparameter to decide the Loss
-    'variance': [0.1, 0.2],
-    'var_updater': 1,
-    'alpha': 1,
-    'alpha_updater': 1,
-    # Jaccard Distance Threshold
-    'overlap_thresh': 0.45,
-    # Whether to constrain the prior boxes inside the image
-    'clip': True,
-    'super_wide': 0.5,
-    'super_wide_coeff': 0.5,
-}
+cfg = ssd_512
 
 class FPN_block(nn.Module):
     def __init__(self, input_channel, output_channel, BN=nn.BatchNorm2d, upscale_factor=2):
@@ -79,13 +30,11 @@ class FPN_block(nn.Module):
 
     def forward(self, x):
         x = self.up_conv(x)
-        #x = self.norm_conv(x)
         return x
 
 
 class Self_Attn(nn.Module):
     """ Self attention Layer"""
-
     def __init__(self, in_dim):
         super().__init__()
         self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
@@ -122,7 +71,7 @@ class SSD(nn.Module):
                  connect_loc_to_conf=False, loc_incep=False, conf_incep=False,
                  loc_preconv=False, conf_preconv=False, nms_thres=0.2,
                  nms_top_k=1600, nms_conf_thres=0.01, FPN=False, SA=False, in_wid=64,
-                 m_factor=1.0, with_extra4=True, extra_layer_setting=None):
+                 m_factor=1.0, extra_layer_setting=None):
         super().__init__()
         self.cfg = cfg
         self.FPN = FPN
@@ -141,7 +90,6 @@ class SSD(nn.Module):
         self.fix_size = fix_size
         self.bottleneck_channel = btnk_chnl
         self.batch_norm = batch_norm
-        self.with_extra4 = with_extra4
         self.extra_layer_filters = extra_layer_setting
         if fix_size:
             self.prior = self.create_prior()#.cuda()
@@ -177,21 +125,21 @@ class SSD(nn.Module):
 
         # Basic VGG Layers
         self.conv_module_name.append("conv_1")
-        self.conv_module.append(nn.Sequential(*net[:6]))
+        self.conv_module.append(nn.Sequential(*net[:7]))
 
         self.conv_module_name.append("conv_2")
-        self.conv_module.append(nn.Sequential(*net[6:13]))
+        self.conv_module.append(nn.Sequential(*net[7:14]))
 
         self.conv_module_name.append("conv_3")
-        self.conv_module.append(nn.Sequential(*net[13:23]))
+        self.conv_module.append(nn.Sequential(*net[14:24]))
         self.fpn_back.update({"conv_3": FPN_block(512, 256)})
 
         self.conv_module_name.append("conv_4")
-        self.conv_module.append(nn.Sequential(*net[23:33]))
+        self.conv_module.append(nn.Sequential(*net[24:34]))
         self.fpn_back.update({"conv_4": FPN_block(512, 512)})
 
         self.conv_module_name.append("conv_5")
-        self.conv_module.append(nn.Sequential(*net[33:43]))
+        self.conv_module.append(nn.Sequential(*net[34:44]))
         self.fpn_back.update({"conv_5": FPN_block(self.extra_layer_filters[1], 512, upscale_factor=1)})
 
         # Extra Layers
@@ -205,19 +153,18 @@ class SSD(nn.Module):
         self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[1], kernel_sizes=[3, 1],
                                                        filters=[self.extra_layer_filters[2], self.extra_layer_filters[3]],
                                                        stride=[1, 2], padding=[1, 0], batch_norm=self.batch_norm))
-        self.fpn_back.update({"extra_2": FPN_block(self.extra_layer_filters[5], self.extra_layer_filters[3], upscale_factor=1)})
+        self.fpn_back.update({"extra_2": FPN_block(self.extra_layer_filters[5], self.extra_layer_filters[3], upscale_factor=2)})
 
         self.conv_module_name.append("extra_3")
         self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[3], kernel_sizes=[3, 1],
                                                        filters=[self.extra_layer_filters[4], self.extra_layer_filters[5]],
-                                                       stride=[1, 1], padding=[1, 0], batch_norm=self.batch_norm))
-        self.fpn_back.update({"extra_3": FPN_block(self.extra_layer_filters[7], self.extra_layer_filters[5], upscale_factor=1)})
+                                                       stride=[1, 2], padding=[1, 0], batch_norm=self.batch_norm))
+        self.fpn_back.update({"extra_3": FPN_block(self.extra_layer_filters[7], self.extra_layer_filters[5], upscale_factor=2)})
 
-        if self.with_extra4:
-            self.conv_module_name.append("extra_4")
-            self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[5], kernel_sizes=[3, 1],
-                                                           filters=[self.extra_layer_filters[6], self.extra_layer_filters[7]],
-                                                           stride=[1, 1], padding=[1, 0], batch_norm=self.batch_norm))
+        self.conv_module_name.append("extra_4")
+        self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[5], kernel_sizes=[3, 1],
+                                                       filters=[self.extra_layer_filters[6], self.extra_layer_filters[7]],
+                                                       stride=[1, 2], padding=[1, 0], batch_norm=self.batch_norm))
 
         if self.SA:
             # self attention module
@@ -362,7 +309,7 @@ class SSD(nn.Module):
         conv_output = []
         for i in range(len(features)):
             # idx is the reverse order of feature
-            idx = len(features) - i - 1
+            idx = len(features) - i# - 1
             if self.FPN:
                 if idx > 0:
                     key = self.conv_module_name[idx - 1]
@@ -480,14 +427,15 @@ if __name__ == "__main__":
     tmp = torch.randn(1, 3, 512, 512).to("cuda")
     x = torch.randn(6, 3, 512, 512).to("cuda")
     ssd = SSD(cfg, connect_loc_to_conf=True, conf_incep=True, loc_incep=True,
-              FPN=True, SA=True, in_wid=48, m_factor=1.5, with_extra4=False).to("cuda")
+              FPN=False, SA=False, in_wid=48, m_factor=1.5).to("cuda")
 
     # Warm up
     _ = ssd(tmp)
     print("start")
     start = time.time()
     loc, conf, prior = ssd(x, verbose=True)
-    print(loc.shape)
-    print(conf.shape)
-    print(prior.shape)
+    print("loc shape: %s"%str(loc.shape))
+    print("conf shape: %s" % str(conf.shape))
+    print("prior shape: %s" % str(prior.shape))
+    assert loc.size(1) == conf.size(1) == prior.size(0)
     print("Calculation cost: %s seconds"%(time.time() - start))
