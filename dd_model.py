@@ -8,8 +8,107 @@ import omni_torch.networks.blocks as omth_blocks
 import init
 from dd_utils import *
 from dd_model_cfg import *
+import mmdet.ops.dcn as dcn
+from itertools import product as product
 
 cfg = ssd_512
+
+class DetectionHeader(nn.Module):
+    def __init__(self, in_channel, ratios, num_classes, opt, ):
+        super().__init__()
+        self.kernel_wise_deform = opt.kernel_wise_deform
+        self.deformation_source = opt.deformation_source
+        self.kernel_size = 3
+        self.deformation = opt.deformation
+        self.img_size = opt.img_size
+
+        self.loc_layers = nn.ModuleList([])
+        for i in range(ratios):
+            self.loc_layers.append(nn.Conv2d(in_channel, 4, kernel_size=3, padding=1))
+
+        if opt.deformation and opt.deformation_source.lower() not in ["geometric", "geometric_v2"]:
+            self.offset_groups = nn.ModuleList([])
+            if opt.deformation_source.lower() == "input":
+                # Previous version, represent deformation_source is True
+                offset_in_channel = in_channel
+            elif opt.deformation_source.lower() == "regression":
+                # Previous version, represent deformation_source is False
+                offset_in_channel = 4
+            elif opt.deformation_source.lower() == "concate":
+                offset_in_channel = in_channel + 4
+            else:
+                raise NotImplementedError()
+            if opt.kernel_wise_deform:
+                deform_depth = 2
+            else:
+                deform_depth = 2 * (self.kernel_size ** 2)
+            for i in range(ratios):
+                pad = int(0.5 * (self.kernel_size - 1) + opt.deform_offset_dilation - 1)
+                _offset2d = nn.Conv2d(offset_in_channel, deform_depth, kernel_size=self.kernel_size,
+                                      bias=opt.deform_offset_bias, padding=pad,
+                                      dilation=opt.deform_offset_dilation)
+                self.offset_groups.append(_offset2d)
+
+        self.conf_layers = nn.ModuleList([])
+        for i in range(ratios):
+            if opt.deformation:
+                _deform = dcn.DeformConv(in_channel, num_classes, kernel_size=self.kernel_size, padding=1, bias=False)
+            else:
+                _deform = nn.Conv2d(in_channel, num_classes, kernel_size=3, padding=1)
+            self.conf_layers.append(_deform)
+
+    def forward(self, x, h, verbose=False, deform_map=False, priors=None, centeroids=None, cfg=None):
+        # regression is a list, the length of regression equals to the number different aspect ratio
+        # under current receptive field, elements of regression are PyTorch Tensor, encoded in
+        # point-form, represent the regressed prior boxes.
+        regression = [loc(x) for loc in self.loc_layers]
+        if verbose:
+            print("regression shape is composed of %d %s" % (len(regression), str(regression[0].shape)))
+        if self.deformation:
+            if self.deformation_source.lower() == "input":
+                _deform_map = [offset(x) for offset in self.offset_groups]
+            elif self.deformation_source.lower() == "regression":
+                _deform_map = [offset(regression[i]) for i, offset in enumerate(self.offset_groups)]
+            elif self.deformation_source.lower() in ["geometric", "geometric_v2"]:
+                _deform_map = []
+                for i, reg in enumerate(regression):
+                    # get the index of certain ratio from prior box
+                    idx = torch.tensor([i + len(regression) * _ for _ in range(reg.size(2) * reg.size(3))]).long()
+                    prior = priors[idx, :]
+                    prior_center = centeroids[idx, :].repeat(x.size(0), 1)
+                    _reg = decode(reg.permute(0, 2, 3, 1).contiguous().view(-1, 4),
+                                  prior.repeat(x.size(0), 1), cfg["variance"]).clamp(min=0, max=1)
+                    reg_center = center_conv_point(_reg)
+                    # print(_reg[0, :].data, point_form(prior[0:1, :]).clamp(min=0, max=1).data)
+                    # TODO: In the future work, when input image is not square, we need
+                    # TODO: to multiply image with its both width and height
+                    df_map = (reg_center - prior_center) * x.size(2)
+                    _deform_map.append(df_map.view(x.size(0), reg.size(2), reg.size(3), -1)
+                                       .permute(0, 3, 1, 2))
+            elif self.deformation_source.lower() == "concate":
+                # TODO: reimplement forward graph
+                raise NotImplementedError()
+            else:
+                raise NotImplementedError()
+
+            if verbose:
+                print("deform_map shape is composed of %d %s" % (len(_deform_map), str(_deform_map[0].shape)))
+            if self.kernel_wise_deform:
+                _deform_map = [dm.repeat(1, self.kernel_size ** 2, 1, 1) for dm in _deform_map]
+            # Amplify the offset signal, so it can deform the kernel to adjacent anchor
+            #_deform_map = [dm * h/x.size(2) for dm in _deform_map]
+            if verbose:
+                print("deform_map shape is extended to %d %s" % (len(_deform_map), str(_deform_map[0].shape)))
+            pred = [deform(x, _deform_map[i]) for i, deform in enumerate(self.conf_layers)]
+        else:
+            pred = [conf(x) for conf in self.conf_layers]
+            _deform_map = None
+        if verbose:
+            print("pred shape is composed of %d %s" % (len(pred), str(pred[0].shape)))
+        if deform_map:
+            return torch.cat(regression, dim=1), torch.cat(pred, dim=1), _deform_map
+        else:
+            return torch.cat(regression, dim=1), torch.cat(pred, dim=1)
 
 class FPN_block(nn.Module):
     def __init__(self, input_channel, output_channel, BN=nn.BatchNorm2d, upscale_factor=2):
@@ -33,44 +132,10 @@ class FPN_block(nn.Module):
         return x
 
 
-class Self_Attn(nn.Module):
-    """ Self attention Layer"""
-    def __init__(self, in_dim):
-        super().__init__()
-        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
-        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-        self.softmax = nn.Softmax(dim=-1)  #
-
-    def forward(self, x):
-        """
-            inputs :
-                x : input feature maps( B X C X W X H)
-            returns :
-                out : self attention value + input feature
-                attention: B X N X N (N is Width*Height)
-        """
-        m_batchsize, C, width, height = x.size()
-        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
-        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
-        energy = torch.bmm(proj_query, proj_key)  # transpose check
-        attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
-
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
-
-        out = self.gamma * out + x
-        return out, attention
-
-
 class SSD(nn.Module):
     def __init__(self, cfg, btnk_chnl=512, batch_norm=nn.BatchNorm2d, fix_size=True,
                  connect_loc_to_conf=False, loc_incep=False, conf_incep=False,
-                 loc_preconv=False, conf_preconv=False, nms_thres=0.2,
-                 nms_top_k=1600, nms_conf_thres=0.01, FPN=False, SA=False, in_wid=64,
+                 loc_preconv=False, conf_preconv=False, FPN=False, SA=False, in_wid=64,
                  m_factor=1.0, extra_layer_setting=None):
         super().__init__()
         self.cfg = cfg
@@ -165,88 +230,7 @@ class SSD(nn.Module):
         self.conv_module.append(omth_blocks.conv_block(self.extra_layer_filters[5], kernel_sizes=[3, 1],
                                                        filters=[self.extra_layer_filters[6], self.extra_layer_filters[7]],
                                                        stride=[1, 2], padding=[1, 0], batch_norm=self.batch_norm))
-        if self.SA:
-            # self attention module
-            if self.with_extra4:
-                filter_num = self.extra_layer_filters[7]
-            else:
-                filter_num = self.extra_layer_filters[5]
-            self.self_attn = Self_Attn(filter_num)
 
-    def create_loc_layer(self, in_channel, anchor, stride, loc_incep=False, in_wid=64, m_factor=1.0,
-                         pre_layer=True):
-        loc_layer = nn.ModuleList([])
-        if pre_layer:
-            loc_layer.append(omth_blocks.conv_block(
-                in_channel, [in_channel, in_channel], kernel_sizes=[3, 1], stride=[1, 1],
-                padding=[2, 0], dilation=[2, 1], batch_norm=self.batch_norm))
-        if loc_incep:
-            wm = round(in_wid * m_factor)
-            loc_layer.append(omth_blocks.InceptionBlock(in_channel,
-                filters=[[wm, wm, in_wid, in_wid], [wm, in_wid, in_wid], [wm, wm, in_wid, in_wid]],
-                kernel_sizes=[[[1, 7], [1, 3], 3, 1], [[1, 5], 3, 1], [[1, 3], [3, 1], 3, 1]],
-                stride=[[1, 1, 1, 1], [1, 1, 1], [1, 1, 1, 1]],
-                padding=[[[0, 3], [0, 1], 1, 0], [[0, 2], 1, 0], [[0, 1], [1, 0], 1, 0]],
-                batch_norm=None, inner_maxout=None)
-            )
-        input_channel = in_wid * 3 if loc_incep else in_channel
-        loc_layer.append(omth_blocks.conv_block(
-            input_channel, filters=[input_channel, int(input_channel / 2), anchor * 4],
-            kernel_sizes=[3, 3, 1], stride=[1, 1, stride], padding=[1, 1, 0], activation=None)
-        )
-        loc_layer.apply(init.init_cnn)
-        return loc_layer
-
-    def create_conf_layer(self, in_channel, anchor, stride, conf_incep=False, in_wid=64, m_factor=1.0,
-                          pre_layer=True):
-        conf_layer = nn.ModuleList([])
-        if pre_layer:
-            conf_layer.append(omth_blocks.conv_block(
-                in_channel, [in_channel, in_channel], kernel_sizes=[3, 1], stride=[1, 1],
-                padding=[3, 0], dilation=[3, 1], batch_norm=self.batch_norm)
-            )
-        if self.connect_loc_to_conf:
-            if conf_incep:
-                wm = round(in_wid * m_factor)
-                out_chnl_2 = in_channel - (3 * in_wid)
-                conf_layer.append(omth_blocks.InceptionBlock(
-                    in_channel, stride=[[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1]],
-                    kernel_sizes=[[[1, 7], 3, 1], [[1, 5], 3, 1], [[1, 3], 3, 1], [3, 1]],
-                    filters=[[wm, in_wid, in_wid], [wm, in_wid, in_wid],
-                             [wm, in_wid, in_wid], [round(out_chnl_2 * m_factor), out_chnl_2]],
-                    padding=[[[0, 3], 1, 0], [[0, 2], 1, 0], [[0, 1], 1, 0], [1, 0]],
-                    batch_norm=None, inner_maxout=None))
-            else:
-                conf_layer.append(omth_blocks.conv_block(
-                    in_channel, filters=[in_channel, in_channel],
-                    kernel_sizes=[1, 3], stride=[1, 1], padding=[0, 1], activation=None))
-            # In this layer, the output from loc_layer will be concatenated to the conf layer
-            # Feeding the conf layer with regressed location, helping the conf layer
-            # to get better prediction
-            conf_concate = omth_blocks.conv_block(
-                in_channel + anchor * 4, kernel_sizes=[3, 3, 1],
-                filters=[int(in_channel), int(in_channel / 4), anchor * 2],
-                stride=[1, 1, stride], padding=[1, 1, 0], activation=None)
-            conf_concate.apply(init.init_cnn)
-        else:
-            if conf_incep:
-                wm = round(in_wid * m_factor)
-                out_chnl_2 = in_channel - (3 * in_wid)
-                conf_layer.append(omth_blocks.InceptionBlock(
-                    in_channel, stride=[[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1]],
-                    kernel_sizes=[[[1, 7], 3, 1], [[1, 5], 3, 1], [[1, 3], 3, 1], [3, 1]],
-                    filters=[[wm, in_wid, in_wid], [wm, in_wid, in_wid],
-                             [wm, in_wid, in_wid], [round(out_chnl_2 * m_factor), out_chnl_2]],
-                    padding=[[[0, 3], 1, 0], [[0, 2], 1, 0], [[0, 1], 1, 0], [1, 0]],
-                    batch_norm=None, inner_maxout=None))
-            else:
-                #print("conf_incep is turned off due to connect_loc_to_conf is False")
-                conf_layer.append(omth_blocks.conv_block(
-                    in_channel, filters=[in_channel, int(in_channel / 2), anchor * 2],
-                    kernel_sizes=[3, 3, 1], stride=[1, 1, stride], padding=[1, 1, 0], activation=None))
-            conf_concate = None
-        conf_layer.apply(init.init_cnn)
-        return conf_layer, conf_concate
 
     def create_prior(self, feature_map_size=None, input_size=None):
         """
@@ -254,7 +238,7 @@ class SSD(nn.Module):
         :param input_size: When input size is not None. which means Dynamic Input Size
         :return:
         """
-        from itertools import product as product
+
         mean = []
         big_box = self.cfg['big_box']
         if feature_map_size is None:
